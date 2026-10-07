@@ -1,0 +1,12 @@
+name = "athgym-r2-api"
+main = "worker.js"
+compatibility_date = "2024-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Private R2 bucket binding for athlete & exercise media
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "athgym-media"
+
+[vars]
+FIREBASE_API_KEY = "AIzaSyD-l8AK9B-itxvmdh08L557i3Myfb-N8xE"

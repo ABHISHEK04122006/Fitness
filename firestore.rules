@@ -1,0 +1,176 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Authoritative Admin Verification using Firebase Authentication Custom Claims
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // User Profile Document
+    match /users/{userId} {
+      // Authenticated users can read their own profile; Admin can read for management
+      allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      // Authenticated users can create or update only their own profile; clients cannot grant themselves ADMIN role
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && (!request.resource.data.keys().hasAny(['role']) || request.resource.data.role != 'ADMIN' || isAdmin());
+      // Client profile deletion disallowed to protect user accounts and audit records
+      allow delete: if false;
+
+      // User Notifications Subcollection: users/{userId}/notifications/{notificationId}
+      match /notifications/{notificationId} {
+        // Authenticated user can read only their own notifications; Admin can read for management
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+
+        // Authenticated user can update only the 'read' status flag of their own notification
+        allow update: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+
+        // Notification creation: Secure client-side creation for Spark-plan development/testing and Admin portal dispatch.
+        // Strictly validates user ownership or admin authority, matching document ID, unread default, and required fields.
+        // In production on Blaze plan, creation can also be performed via Cloud Functions.
+        allow create: if request.auth != null
+          && (request.auth.uid == userId || isAdmin())
+          && request.resource.data.userId == userId
+          && request.resource.data.id == notificationId
+          && request.resource.data.read == false
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.message is string
+          && request.resource.data.message.size() > 0
+          && (request.resource.data.createdAt is int || request.resource.data.createdAt is float || request.resource.data.createdAt is timestamp);
+
+        // Deleting notifications directly from client is disallowed for data auditability
+        allow delete: if false;
+      }
+
+      // Device Tokens Subcollection: users/{userId}/devices/{deviceId}
+      match /devices/{deviceId} {
+        // Authenticated user can read, write, and delete their own; Admin can read for management
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+        allow write, delete: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // FCM Registration Tokens Subcollection: users/{userId}/fcmTokens/{tokenId}
+      match /fcmTokens/{tokenId} {
+        // Authenticated user can read, write, and delete only their own FCM tokens; Admin can read for management
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+        allow write, delete: if request.auth != null && request.auth.uid == userId;
+      }
+
+      // User Workout History Subcollection: users/{userId}/workoutHistory/{sessionId}
+      // Scoped strictly to authenticated user's own workout performance data.
+      match /workoutHistory/{sessionId} {
+        // Authenticated user can read only their own workout history; Admin can read for analytics/management
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+
+        // Authenticated user can create their own completed workout session records
+        allow create: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.userId == request.auth.uid;
+
+        // Authenticated user can update their own workout history (e.g. syncStatus, notes)
+        allow update: if request.auth != null
+          && request.auth.uid == userId
+          && request.resource.data.userId == request.auth.uid;
+
+        // Permanent deletion from client is disallowed to protect user progress integrity and auditability
+        allow delete: if false;
+      }
+
+      // User Settings Subcollection: users/{userId}/settings/{settingId}
+      // Scoped strictly to authenticated user's own settings (e.g. notifications / reminders)
+      match /settings/{settingId} {
+        allow read, write: if request.auth != null && (request.auth.uid == userId || isAdmin());
+      }
+
+      // User Favorites Subcollection: users/{userId}/favorites/{favoriteId}
+      // Scoped strictly to authenticated user's bookmarked exercises and workouts.
+      match /favorites/{favoriteId} {
+        // Authenticated user can read only their own favorites; Admin can read for management
+        allow read: if request.auth != null && (request.auth.uid == userId || isAdmin());
+
+        // Authenticated user can add/bookmark their own favorites
+        allow create, update: if request.auth != null
+          && request.auth.uid == userId
+          && (!request.resource.data.keys().hasAny(['exerciseId', 'workoutId', 'id'])
+              || ('exerciseId' in request.resource.data && request.resource.data.exerciseId == favoriteId)
+              || ('workoutId' in request.resource.data && request.resource.data.workoutId == favoriteId)
+              || ('id' in request.resource.data && request.resource.data.id == favoriteId));
+
+        // Authenticated user can remove/unfavorite their own favorites
+        allow delete: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // Future Admin-Managed Collections (Workouts, Programs, Exercises, System Announcements)
+    // Strictly guarded by request.auth.token.admin == true
+    // Exercises Foundation Collection: exercises/{exerciseId}
+    // Stable unique document ID representing centralized exercise data.
+    match /exercises/{exerciseId} {
+      // Anyone (authenticated users, guests, offline clients) can read exercise catalog data; Admins can manage
+      allow read: if true;
+
+      // Only administrators can create new exercises
+      allow create: if isAdmin();
+
+      // Only administrators can update exercises (including soft-delete archiving via isActive: false)
+      allow update: if isAdmin();
+
+      // Administrators can permanently delete exercises
+      allow delete: if isAdmin();
+    }
+
+    // Programs Foundation Collection: programs/{programId}
+    // Stable unique document ID representing centralized workout programs.
+    match /programs/{programId} {
+      // Anyone can read active program catalog data
+      allow read: if true;
+
+      // Only administrators can create new programs
+      allow create: if isAdmin();
+
+      // Only administrators can update programs (including soft-delete archiving via isActive: false)
+      allow update: if isAdmin();
+
+      // Permanent physical deletion is strictly disabled to protect user enrollment, progress and history
+      allow delete: if false;
+    }
+
+    // Workouts Foundation Collection: workouts/{workoutId}
+    // Stable unique document ID representing centralized workouts.
+    match /workouts/{workoutId} {
+      // Anyone can read active workout catalog data
+      allow read: if true;
+
+      // Only administrators can create or update workouts (including soft-delete archiving)
+      allow create, update: if isAdmin();
+
+      // Permanent physical deletion is strictly disabled to protect workout references and history
+      allow delete: if false;
+    }
+
+    match /admin_config/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /system_announcements/{announcementId} {
+      allow read: if request.auth != null;
+      allow write: if isAdmin();
+    }
+
+    // Admin Notification Broadcast History & Audit Log
+    match /admin_notification_history/{notificationId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // Admin Catalog Seed & Sync History & Audit Log
+    match /admin_sync_history/{syncId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+  }
+}
